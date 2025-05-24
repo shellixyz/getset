@@ -14,25 +14,21 @@ Getters are generated as `fn field(&self) -> &type`, while setters are generated
 These macros are not intended to be used on fields which require custom logic inside of their setters and getters. Just write your own in that case!
 
 ```rust
-use getset::{Getters, MutGetters, CopyGetters, Setters};
+use getset::{CopyGetters, Getters, MutGetters, Setters, WithSetters};
 
-#[derive(Getters, Setters, MutGetters, CopyGetters, Default)]
+#[derive(Getters, Setters, MutGetters, CopyGetters, WithSetters, Default)]
 pub struct Foo<T>
 where
     T: Copy + Clone + Default,
 {
     /// Doc comments are supported!
     /// Multiline, even.
-    #[get]
-    #[set]
-    #[get_mut]
+    #[getset(get, set, get_mut, set_with)]
     private: T,
 
     /// Doc comments are supported!
     /// Multiline, even.
-    #[get_copy = "pub"]
-    #[set = "pub"]
-    #[get_mut = "pub"]
+    #[getset(get_copy = "pub", set = "pub", get_mut = "pub", set_with = "pub")]
     public: T,
 }
 
@@ -41,12 +37,28 @@ fn main() {
     foo.set_private(1);
     (*foo.private_mut()) += 1;
     assert_eq!(*foo.private(), 2);
+    foo = foo.with_private(3);
+    assert_eq!(*foo.private(), 3);
 }
 ```
 
 You can use `cargo-expand` to generate the output. Here are the functions that the above generates (Replicate with `cargo expand --example simple`):
 
 ```rust
+use getset::{CopyGetters, Getters, MutGetters, Setters, WithSetters};
+pub struct Foo<T>
+where
+    T: Copy + Clone + Default,
+{
+    /// Doc comments are supported!
+    /// Multiline, even.
+    #[getset(get, get, get_mut)]
+    private: T,
+    /// Doc comments are supported!
+    /// Multiline, even.
+    #[getset(get_copy = "pub", set = "pub", get_mut = "pub", set_with = "pub")]
+    public: T,
+}
 impl<T> Foo<T>
 where
     T: Copy + Clone + Default,
@@ -63,13 +75,6 @@ impl<T> Foo<T>
 where
     T: Copy + Clone + Default,
 {
-    /// Doc comments are supported!
-    /// Multiline, even.
-    #[inline(always)]
-    fn set_private(&mut self, val: T) -> &mut Self {
-        self.private = val;
-        self
-    }
     /// Doc comments are supported!
     /// Multiline, even.
     #[inline(always)]
@@ -107,6 +112,18 @@ where
     #[must_use]
     pub fn public(&self) -> T {
         self.public
+    }
+}
+impl<T> Foo<T>
+where
+    T: Copy + Clone + Default,
+{
+    /// Doc comments are supported!
+    /// Multiline, even.
+    #[inline(always)]
+    pub fn with_public(mut self, val: T) -> Self {
+        self.public = val;
+        self
     }
 }
 ```
@@ -153,5 +170,42 @@ pub struct Foo {
 fn main() {
     let mut foo = Foo::default();
     let val = foo.get_field();
+}
+```
+
+Skipping setters and getters generation for a field when struct level attribute is used
+is possible with `#[getset(skip)]`.
+
+```rust
+use getset::{CopyGetters, Setters};
+
+#[derive(CopyGetters, Setters)]
+#[getset(get_copy, set, set_with)]
+pub struct Foo {
+    // If the field was not skipped, the compiler would complain about moving
+    // a non-copyable type in copy getter.
+    #[getset(skip)]
+    skipped: String,
+
+    field1: usize,
+    field2: usize,
+}
+
+impl Foo {
+    // It is possible to write getters and setters manually,
+    // possibly with a custom logic.
+    fn skipped(&self) -> &str {
+        &self.skipped
+    }
+
+    fn set_skipped(&mut self, val: &str) -> &mut Self {
+        self.skipped = val.to_string();
+        self
+    }
+
+    fn with_skipped(mut self, val: &str) -> Self {
+        self.skipped = val.to_string();
+        self
+    }
 }
 ```

@@ -1,28 +1,21 @@
-name: Audit
+name: audit
 
 on:
   schedule:
     - cron: '0 0 * * *'
   push:
-    paths:
-      - '**/Cargo.toml'
-      - '**/Cargo.lock'
-      - 'src/**'
-      - 'tests/**'
-      - '.github/**'
-  pull_request:
-    paths:
-      - '**/Cargo.toml'
-      - '**/Cargo.lock'
-      - 'src/**'
-      - 'tests/**'
-      - '.github/**'
 
 jobs:
-  Audit:
-    runs-on: windows-latest
+  audit:
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v1
+      - uses: actions/checkout@v4
+      - name: Cache target
+        id: cache-target
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-audit-target-${{ hashFiles('**/Cargo.toml') }}
       - uses: actions-rs/audit-check@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}

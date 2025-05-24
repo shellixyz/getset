@@ -8,7 +8,7 @@ Getters are generated as `fn field(&self) -> &type`, while setters are generated
 These macros are not intended to be used on fields which require custom logic inside of their setters and getters. Just write your own in that case!
 
 ```rust
-use getset::{Getters, MutGetters, CopyGetters, Setters};
+use getset::{CopyGetters, Getters, MutGetters, Setters};
 
 #[derive(Getters, Setters, MutGetters, CopyGetters, Default)]
 pub struct Foo<T>
@@ -17,30 +17,38 @@ where
 {
     /// Doc comments are supported!
     /// Multiline, even.
-    #[get]
-    #[set]
-    #[get_mut]
+    #[getset(get, set, get_mut)]
     private: T,
 
     /// Doc comments are supported!
     /// Multiline, even.
-    #[get_copy = "pub"]
-    #[set = "pub"]
-    #[get_mut = "pub"]
+    #[getset(get_copy = "pub", set = "pub", get_mut = "pub")]
     public: T,
 }
 
-fn main() {
-    let mut foo = Foo::default();
-    foo.set_private(1);
-    (*foo.private_mut()) += 1;
-    assert_eq!(*foo.private(), 2);
-}
+let mut foo = Foo::default();
+foo.set_private(1);
+(*foo.private_mut()) += 1;
+assert_eq!(*foo.private(), 2);
 ```
 
 You can use `cargo-expand` to generate the output. Here are the functions that the above generates (Replicate with `cargo expand --example simple`):
 
 ```rust,ignore
+use getset::{Getters, MutGetters, CopyGetters, Setters, WithSetters};
+pub struct Foo<T>
+where
+    T: Copy + Clone + Default,
+{
+    /// Doc comments are supported!
+    /// Multiline, even.
+    #[getset(get, get, get_mut)]
+    private: T,
+    /// Doc comments are supported!
+    /// Multiline, even.
+    #[getset(get_copy = "pub", set = "pub", get_mut = "pub")]
+    public: T,
+}
 impl<T> Foo<T>
 where
     T: Copy + Clone + Default,
@@ -57,13 +65,6 @@ impl<T> Foo<T>
 where
     T: Copy + Clone + Default,
 {
-    /// Doc comments are supported!
-    /// Multiline, even.
-    #[inline(always)]
-    fn set_private(&mut self, val: T) -> &mut Self {
-        self.private = val;
-        self
-    }
     /// Doc comments are supported!
     /// Multiline, even.
     #[inline(always)]
@@ -109,15 +110,13 @@ Attributes can be set on struct level for all fields in struct as well. Field le
 precedence.
 
 ```rust
-#[macro_use]
-extern crate getset;
-
 mod submodule {
+    use getset::{Getters, MutGetters, CopyGetters, Setters, WithSetters};
     #[derive(Getters, CopyGetters, Default)]
-    #[get_copy = "pub"] // By default add a pub getting for all fields.
+    #[getset(get_copy = "pub")] // By default add a pub getting for all fields.
     pub struct Foo {
         public: i32,
-        #[get_copy] // Override as private
+        #[getset(get_copy)] // Override as private
         private: i32,
     }
     fn demo() {
@@ -125,149 +124,256 @@ mod submodule {
         foo.private();
     }
 }
-fn main() {
-    let mut foo = submodule::Foo::default();
-    foo.public();
-}
+
+let mut foo = submodule::Foo::default();
+foo.public();
 ```
 
 For some purposes, it's useful to have the `get_` prefix on the getters for
-either legacy of compatability reasons. It is done with `with_prefix`.
+either legacy of compatibility reasons. It is done with `with_prefix`.
 
 ```rust
-#[macro_use]
-extern crate getset;
+use getset::{Getters, MutGetters, CopyGetters, Setters, WithSetters};
 
 #[derive(Getters, Default)]
 pub struct Foo {
-    #[get = "pub with_prefix"]
+    #[getset(get = "pub with_prefix")]
     field: bool,
 }
 
-fn main() {
-    let mut foo = Foo::default();
-    let val = foo.get_field();
+
+let mut foo = Foo::default();
+let val = foo.get_field();
+```
+
+Skipping setters and getters generation for a field when struct level attribute is used
+is possible with `#[getset(skip)]`.
+
+```rust
+use getset::{CopyGetters, Setters, WithSetters};
+
+#[derive(CopyGetters, Setters, WithSetters)]
+#[getset(get_copy, set, set_with)]
+pub struct Foo {
+    // If the field was not skipped, the compiler would complain about moving
+    // a non-copyable type in copy getter.
+    #[getset(skip)]
+    skipped: String,
+
+    field1: usize,
+    field2: usize,
 }
+
+impl Foo {
+    // It is possible to write getters and setters manually,
+    // possibly with a custom logic.
+    fn skipped(&self) -> &str {
+        &self.skipped
+    }
+
+    fn set_skipped(&mut self, val: &str) -> &mut Self {
+        self.skipped = val.to_string();
+        self
+    }
+
+    fn with_skipped(mut self, val: &str) -> Self {
+        self.skipped = val.to_string();
+        self
+    }
+}
+```
+
+For a unary struct (a tuple struct with a single field),
+the macro generates the `get`, `get_mut`, and `set` functions to
+provide a getter, a mutable getter, and a setter, respectively.
+
+```rust
+use getset::{Getters, MutGetters, CopyGetters, Setters};
+
+#[derive(Setters, Getters, MutGetters)]
+struct UnaryTuple(#[getset(set, get, get_mut)] i32);
+
+let mut tup = UnaryTuple(42);
+assert_eq!(tup.get(), &42);
+assert_eq!(tup.get_mut(), &mut 42);
+tup.set(43);
+assert_eq!(tup.get(), &43);
+
+#[derive(CopyGetters)]
+struct CopyUnaryTuple(#[getset(get_copy)] i32);
+
+let tup = CopyUnaryTuple(42);
 ```
 */
 
-extern crate proc_macro;
-extern crate syn;
 #[macro_use]
 extern crate quote;
-extern crate proc_macro2;
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
-use syn::{DataStruct, DeriveInput, Meta};
+use proc_macro_error2::{abort, abort_call_site, proc_macro_error};
+use syn::{parse_macro_input, spanned::Spanned, DataStruct, DeriveInput, Meta};
 
-mod generate;
 use crate::generate::{GenMode, GenParams};
 
-#[proc_macro_derive(Getters, attributes(get, with_prefix))]
+mod generate;
+
+#[proc_macro_derive(Getters, attributes(get, with_prefix, getset))]
+#[proc_macro_error]
 pub fn getters(input: TokenStream) -> TokenStream {
-    // Parse the string representation
-    let ast: DeriveInput = syn::parse(input).expect("Couldn't parse for getters");
+    let ast = parse_macro_input!(input as DeriveInput);
     let params = GenParams {
-        attribute_name: "get",
-        fn_name_prefix: "",
-        fn_name_suffix: "",
-        global_attr: parse_global_attr(&ast.attrs, "get"),
+        mode: GenMode::Get,
+        global_attr: parse_global_attr(&ast.attrs, GenMode::Get),
     };
 
-    // Build the impl
-    let gen = produce(&ast, &GenMode::Get, &params);
-
-    // Return the generated impl
-    gen.into()
+    produce(&ast, &params).into()
 }
 
-#[proc_macro_derive(CopyGetters, attributes(get_copy, with_prefix))]
+#[proc_macro_derive(CopyGetters, attributes(get_copy, with_prefix, getset))]
+#[proc_macro_error]
 pub fn copy_getters(input: TokenStream) -> TokenStream {
-    // Parse the string representation
-    let ast: DeriveInput = syn::parse(input).expect("Couldn't parse for getters");
+    let ast = parse_macro_input!(input as DeriveInput);
     let params = GenParams {
-        attribute_name: "get_copy",
-        fn_name_prefix: "",
-        fn_name_suffix: "",
-        global_attr: parse_global_attr(&ast.attrs, "get_copy"),
+        mode: GenMode::GetCopy,
+        global_attr: parse_global_attr(&ast.attrs, GenMode::GetCopy),
     };
 
-    // Build the impl
-    let gen = produce(&ast, &GenMode::GetCopy, &params);
-
-    // Return the generated impl
-    gen.into()
+    produce(&ast, &params).into()
 }
 
-#[proc_macro_derive(MutGetters, attributes(get_mut))]
+#[proc_macro_derive(MutGetters, attributes(get_mut, getset))]
+#[proc_macro_error]
 pub fn mut_getters(input: TokenStream) -> TokenStream {
-    // Parse the string representation
-    let ast: DeriveInput = syn::parse(input).expect("Couldn't parse for getters");
+    let ast = parse_macro_input!(input as DeriveInput);
     let params = GenParams {
-        attribute_name: "get_mut",
-        fn_name_prefix: "",
-        fn_name_suffix: "_mut",
-        global_attr: parse_global_attr(&ast.attrs, "get_mut"),
+        mode: GenMode::GetMut,
+        global_attr: parse_global_attr(&ast.attrs, GenMode::GetMut),
     };
 
-    // Build the impl
-    let gen = produce(&ast, &GenMode::GetMut, &params);
-    // Return the generated impl
-    gen.into()
+    produce(&ast, &params).into()
 }
 
-#[proc_macro_derive(Setters, attributes(set))]
+#[proc_macro_derive(Setters, attributes(set, getset))]
+#[proc_macro_error]
 pub fn setters(input: TokenStream) -> TokenStream {
-    // Parse the string representation
-    let ast: DeriveInput = syn::parse(input).expect("Couldn't parse for setters");
+    let ast = parse_macro_input!(input as DeriveInput);
     let params = GenParams {
-        attribute_name: "set",
-        fn_name_prefix: "set_",
-        fn_name_suffix: "",
-        global_attr: parse_global_attr(&ast.attrs, "set"),
+        mode: GenMode::Set,
+        global_attr: parse_global_attr(&ast.attrs, GenMode::Set),
     };
 
-    // Build the impl
-    let gen = produce(&ast, &GenMode::Set, &params);
-
-    // Return the generated impl
-    gen.into()
+    produce(&ast, &params).into()
 }
 
-fn parse_global_attr(attrs: &[syn::Attribute], attribute_name: &str) -> Option<Meta> {
-    attrs
-        .iter()
-        .filter_map(|v| {
-            let meta = v.parse_meta().expect("attribute");
-            if meta.path().is_ident(attribute_name) {
-                Some(meta)
+#[proc_macro_derive(WithSetters, attributes(set_with, getset))]
+#[proc_macro_error]
+pub fn with_setters(input: TokenStream) -> TokenStream {
+    let ast = parse_macro_input!(input as DeriveInput);
+    let params = GenParams {
+        mode: GenMode::SetWith,
+        global_attr: parse_global_attr(&ast.attrs, GenMode::SetWith),
+    };
+
+    produce(&ast, &params).into()
+}
+
+fn parse_global_attr(attrs: &[syn::Attribute], mode: GenMode) -> Option<Meta> {
+    attrs.iter().filter_map(|v| parse_attr(v, mode)).next_back()
+}
+
+fn parse_attr(attr: &syn::Attribute, mode: GenMode) -> Option<syn::Meta> {
+    use syn::{punctuated::Punctuated, Token};
+
+    if attr.path().is_ident("getset") {
+        let meta_list =
+            match attr.parse_args_with(Punctuated::<syn::Meta, Token![,]>::parse_terminated) {
+                Ok(list) => list,
+                Err(e) => abort!(attr.span(), "Failed to parse getset attribute: {}", e),
+            };
+
+        let (last, skip, mut collected) = meta_list
+            .into_iter()
+            .inspect(|meta| {
+                if !(meta.path().is_ident("get")
+                    || meta.path().is_ident("get_copy")
+                    || meta.path().is_ident("get_mut")
+                    || meta.path().is_ident("set")
+                    || meta.path().is_ident("set_with")
+                    || meta.path().is_ident("skip"))
+                {
+                    abort!(meta.path().span(), "unknown setter or getter")
+                }
+            })
+            .fold(
+                (None, None, Vec::new()),
+                |(last, skip, mut collected), meta| {
+                    if meta.path().is_ident(mode.name()) {
+                        (Some(meta), skip, collected)
+                    } else if meta.path().is_ident("skip") {
+                        (last, Some(meta), collected)
+                    } else {
+                        collected.push(meta);
+                        (last, skip, collected)
+                    }
+                },
+            );
+
+        if skip.is_some() {
+            // Check if there is any setter or getter used with skip, which is
+            // forbidden.
+            if last.is_none() && collected.is_empty() {
+                skip
             } else {
-                None
+                abort!(
+                    last.or_else(|| collected.pop()).unwrap().path().span(),
+                    "use of setters and getters with skip is invalid"
+                );
             }
-        })
-        .last()
+        } else {
+            last
+        }
+    } else if attr.path().is_ident(mode.name()) {
+        // If skip is not used, return the last occurrence of matching
+        // setter/getter, if there is any.
+        attr.meta.clone().into()
+    } else {
+        None
+    }
 }
 
-fn produce(ast: &DeriveInput, mode: &GenMode, params: &GenParams) -> TokenStream2 {
+fn produce(ast: &DeriveInput, params: &GenParams) -> TokenStream2 {
     let name = &ast.ident;
     let generics = &ast.generics;
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
     // Is it a struct?
     if let syn::Data::Struct(DataStruct { ref fields, .. }) = ast.data {
-        let generated = fields
-            .iter()
-            .map(|f| generate::implement(f, mode, params))
-            .collect::<Vec<_>>();
+        // Handle unary struct
+        if matches!(fields, syn::Fields::Unnamed(_)) {
+            if fields.len() != 1 {
+                abort_call_site!("Only support unary struct!");
+            }
+            // This unwrap is safe because we know there is exactly one field
+            let field = fields.iter().next().unwrap();
+            let generated = generate::implement_for_unnamed(field, params);
 
-        quote! {
-            impl #impl_generics #name #ty_generics #where_clause {
-                #(#generated)*
+            quote! {
+                impl #impl_generics #name #ty_generics #where_clause {
+                    #generated
+                }
+            }
+        } else {
+            let generated = fields.iter().map(|f| generate::implement(f, params));
+
+            quote! {
+                impl #impl_generics #name #ty_generics #where_clause {
+                    #(#generated)*
+                }
             }
         }
     } else {
         // Nope. This is an Enum. We cannot handle these!
-        panic!("#[derive(Getters)] is only defined for structs, not for enums!");
+        abort_call_site!("#[derive(Getters)] is only defined for structs, not for enums!");
     }
 }
